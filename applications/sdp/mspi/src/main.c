@@ -18,6 +18,8 @@
 #include <drivers/mspi/nrfe_mspi.h>
 
 #include <stdint.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 #define CE_PINS_MAX   9
 #define DATA_PINS_MAX 8
@@ -26,6 +28,7 @@
 #define SUPPORTED_IO_MODES_COUNT 10
 
 #define HRT_IRQ_PRIORITY    2
+#define HRT_VEVIF_IDX_READ  17
 #define HRT_VEVIF_IDX_WRITE 18
 
 #define VEVIF_IRQN(vevif)   VEVIF_IRQN_1(vevif)
@@ -61,6 +64,7 @@ static const hrt_xfer_io_mode_cfg_t io_modes[SUPPORTED_IO_MODES_COUNT] = {
 	{1, 8, 8}, /* MSPI_IO_MODE_OCTAL_1_8_8 */
 };
 
+static volatile uint8_t clk_vio;
 static volatile uint8_t ce_vios_count;
 static volatile uint8_t ce_vios[CE_PINS_MAX];
 static volatile uint8_t data_vios_count;
@@ -70,6 +74,8 @@ static volatile struct mspi_dev_cfg nrfe_mspi_dev_cfg;
 static volatile struct mspi_xfer nrfe_mspi_xfer;
 static volatile hrt_xfer_t xfer_params;
 static volatile uint8_t address_and_dummy_cycles[ADDR_AND_CYCLES_MAX_SIZE];
+
+static volatile uint8_t rx_buffer[512];
 
 static struct ipc_ept ep;
 static atomic_t ipc_atomic_sem = ATOMIC_INIT(0);
@@ -221,6 +227,12 @@ static void config_pins(nrfe_mspi_pinctrl_soc_pin_t *pins_cfg)
 
 		NRFX_ASSERT(pin_number < VIO_COUNT)
 
+		if (fun == NRF_FUN_SDP_MSPI_SCK) {
+			NRFX_ASSERT(pin_number < sizeof(pin_to_vio_map))
+			clk_vio = pin_to_vio_map[pin_number];
+			printf("clk pin %d => vio: %d\n", pin_number, pin_to_vio_map[pin_number]);
+		}
+
 		if ((fun >= NRF_FUN_SDP_MSPI_CS0) && (fun <= NRF_FUN_SDP_MSPI_CS4)) {
 
 			ce_vios[ce_vios_count] = pin_to_vio_map[pin_number];
@@ -247,8 +259,14 @@ static void config_pins(nrfe_mspi_pinctrl_soc_pin_t *pins_cfg)
 				  VPRCSR_NORDIC_DIR_OUTPUT);
 		}
 	}
+
 	nrf_vpr_csr_vio_dir_set(xfer_params.tx_direction_mask);
 	nrf_vpr_csr_vio_out_set(VPRCSR_NORDIC_OUT_HIGH << pin_to_vio_map[NRFE_MSPI_CS0_PIN_NUMBER]);
+
+	/* Default set CS to HIGH state */
+	for (uint8_t i = 0; i < ce_vios_count; i++) {
+		out = BIT_SET_VALUE(out, ce_vios[i], VPRCSR_NORDIC_OUT_HIGH);
+	}
 }
 
 static void ep_bound(void *priv)
@@ -256,12 +274,355 @@ static void ep_bound(void *priv)
 	atomic_set_bit(&ipc_atomic_sem, NRFE_MSPI_EP_BOUNDED);
 }
 
+static void ll_prepare_transfer(enum base_io_mode xfer_mode, uint32_t data_length)
+{
+	nrf_vpr_csr_vio_config_t config;
+	nrf_vpr_csr_vio_mode_out_t out_mode = {
+		.mode = NRF_VPR_CSR_VIO_SHIFT_OUTB_TOGGLE,
+		.frame_width = 1,
+	};
+
+	nrf_vpr_csr_vio_mode_out_set(&out_mode);
+	nrf_vpr_csr_vio_mode_in_buffered_set(NRF_VPR_CSR_VIO_MODE_IN_CONTINUOUS);
+
+	nrf_vpr_csr_vio_config_get(&config);
+	config.input_sel = false;
+	nrf_vpr_csr_vio_config_set(&config);
+
+	/* Counter settings */
+	nrf_vpr_csr_vtim_count_mode_set(0, NRF_VPR_CSR_VTIM_COUNT_RELOAD);
+	/* TODO: Jira ticket: NRFX-6703
+	 *       Top value of VTIM. This will determine clock frequency
+	 *                         (SPI_CLOCK ~= CPU_CLOCK / (2 * TOP)).
+	 *       Calculate this value based on frequency
+	 */
+	nrf_vpr_csr_vtim_simple_counter_top_set(0, 32);
+
+	/* Set number of shifts before OUTB needs to be updated.
+	 * First shift needs to be increased by 1.
+	 */
+	nrf_vpr_csr_vio_shift_cnt_out_set(BITS_IN_WORD / out_mode.frame_width);
+	nrf_vpr_csr_vio_shift_cnt_out_buffered_set(BITS_IN_WORD / out_mode.frame_width - 1);
+
+	uint8_t last_word_length = data_length % BITS_IN_WORD;
+	uint8_t penultimate_word_length = BITS_IN_WORD;
+
+	xfer_ll_params.words = NRFX_CEIL_DIV(data_length, BITS_IN_WORD);
+	xfer_ll_params.last_word = ((uint32_t *)xfer_ll_params.data)[xfer_ll_params.words - 1];
+
+	/* Due to hardware limitations it is not possible to send only 1 clock cycle.
+	 * Therefore when data_length%32==1  last word is sent shorter (24bits)
+	 * and the remaining byte and 1 bit is sent together.
+	 */
+	if (last_word_length == 0) {
+
+		last_word_length = BITS_IN_WORD;
+		xfer_ll_params.last_word =
+			((uint32_t *)xfer_ll_params.data)[xfer_ll_params.words - 1];
+
+	} else if ((last_word_length / out_mode.frame_width == 1) && (xfer_ll_params.words > 1)) {
+
+		penultimate_word_length -= BITS_IN_BYTE;
+		last_word_length += BITS_IN_BYTE;
+		xfer_ll_params.last_word =
+			((uint32_t *)xfer_ll_params.data)[xfer_ll_params.words - 2] >>
+				(BITS_IN_WORD - BITS_IN_BYTE) |
+			((uint32_t *)xfer_ll_params.data)[xfer_ll_params.words - 1] << BITS_IN_BYTE;
+	}
+
+	xfer_ll_params.last_word_clocks = last_word_length / out_mode.frame_width;
+	xfer_ll_params.penultimate_word_clocks = penultimate_word_length / out_mode.frame_width;
+
+	if (xfer_ll_params.words == 1) {
+		nrf_vpr_csr_vio_shift_cnt_out_set(xfer_ll_params.last_word_clocks);
+	} else if (xfer_ll_params.words == 2) {
+		nrf_vpr_csr_vio_shift_cnt_out_set(xfer_ll_params.penultimate_word_clocks);
+	}
+}
+
+static void ll_prepare_receive(uint16_t frame_width, enum mspi_xfer_direction xfer_dir,
+				uint32_t data_length)
+{
+	nrf_vpr_csr_vio_config_t config;
+	nrf_vpr_csr_vio_mode_out_t out_mode = {
+		.mode = NRF_VPR_CSR_VIO_SHIFT_OUTB_TOGGLE,
+		.frame_width = frame_width,
+	};
+
+	nrf_vpr_csr_vio_config_get(&config);
+	config.input_sel = true;
+	nrf_vpr_csr_vio_config_set(&config);
+
+	nrf_vpr_csr_vio_mode_out_set(&out_mode);
+
+	uint8_t last_word_length = data_length % BITS_IN_WORD;
+	uint8_t penultimate_word_length = BITS_IN_WORD;
+
+	xfer_ll_params.words = NRFX_CEIL_DIV(data_length, BITS_IN_WORD);
+	xfer_ll_params.last_word = ((uint32_t *)xfer_ll_params.data)[xfer_ll_params.words - 1];
+
+	/* Due to hardware limitations it is not possible to send only 1 clock cycle.
+	 * Therefore when data_length%32==1  last word is sent shorter (24bits)
+	 * and the remaining byte and 1 bit is sent together.
+	 */
+	if (last_word_length == 0) {
+
+		last_word_length = BITS_IN_WORD;
+		xfer_ll_params.last_word =
+			((uint32_t *)xfer_ll_params.data)[xfer_ll_params.words - 1];
+
+	} else if ((last_word_length / out_mode.frame_width == 1) && (xfer_ll_params.words > 1)) {
+
+		penultimate_word_length -= BITS_IN_BYTE;
+		last_word_length += BITS_IN_BYTE;
+		xfer_ll_params.last_word =
+			((uint32_t *)xfer_ll_params.data)[xfer_ll_params.words - 2] >>
+				(BITS_IN_WORD - BITS_IN_BYTE) |
+			((uint32_t *)xfer_ll_params.data)[xfer_ll_params.words - 1] << BITS_IN_BYTE;
+	}
+
+	xfer_ll_params.last_word_clocks = last_word_length / out_mode.frame_width;
+	xfer_ll_params.penultimate_word_clocks = penultimate_word_length / out_mode.frame_width;
+
+	if (xfer_ll_params.words == 1) {
+		nrf_vpr_csr_vio_shift_cnt_out_set(xfer_ll_params.last_word_clocks);
+		nrf_vpr_csr_vio_shift_cnt_out_buffered_set(xfer_ll_params.last_word_clocks - 1);
+	} else if (xfer_ll_params.words == 2) {
+		nrf_vpr_csr_vio_shift_cnt_out_set(xfer_ll_params.penultimate_word_clocks);
+		nrf_vpr_csr_vio_shift_cnt_out_buffered_set(xfer_ll_params.penultimate_word_clocks - 1);
+	} else {
+		nrf_vpr_csr_vio_shift_cnt_out_set(BITS_IN_WORD / out_mode.frame_width);
+		nrf_vpr_csr_vio_shift_cnt_out_buffered_set((BITS_IN_WORD / out_mode.frame_width) - 1);
+	}
+
+	nrf_vpr_csr_vio_mode_in_buffered_set(NRF_VPR_CSR_VIO_MODE_IN_SHIFT);
+}
+
+static void dev_pins_configure(enum mspi_cpp_mode cpp_mode)
+{
+	nrf_vpr_csr_vio_config_t vio_config = {
+		.input_sel = 0,
+		.stop_cnt = 0,
+	};
+	uint16_t out = nrf_vpr_csr_vio_out_get();
+
+	switch (cpp_mode) {
+	case MSPI_CPP_MODE_0: {
+		vio_config.clk_polarity = 0;
+		out = BIT_SET_VALUE(out, clk_vio, VPRCSR_NORDIC_OUT_LOW);
+		xfer_ll_params.eliminate_last_pulse = false;
+		break;
+	}
+	case MSPI_CPP_MODE_1: {
+		vio_config.clk_polarity = 1;
+		out = BIT_SET_VALUE(out, clk_vio, VPRCSR_NORDIC_OUT_LOW);
+		xfer_ll_params.eliminate_last_pulse = true;
+		break;
+	}
+	case MSPI_CPP_MODE_2: {
+		vio_config.clk_polarity = 1;
+		out = BIT_SET_VALUE(out, clk_vio, VPRCSR_NORDIC_OUT_HIGH);
+		xfer_ll_params.eliminate_last_pulse = false;
+		break;
+	}
+	case MSPI_CPP_MODE_3: {
+		vio_config.clk_polarity = 0;
+		out = BIT_SET_VALUE(out, clk_vio, VPRCSR_NORDIC_OUT_HIGH);
+		xfer_ll_params.eliminate_last_pulse = true;
+		break;
+	}
+	}
+
+	for (uint8_t i = 0; i < ce_vios_count; i++) {
+		if (nrfe_mspi_dev_cfg.ce_polarity == MSPI_CE_ACTIVE_LOW) {
+			out = BIT_SET_VALUE(out, ce_vios[i], VPRCSR_NORDIC_OUT_HIGH);
+		} else {
+			out = BIT_SET_VALUE(out, ce_vios[i], VPRCSR_NORDIC_OUT_LOW);
+		}
+	}
+
+	nrf_vpr_csr_vio_out_set(out);
+	nrf_vpr_csr_vio_config_set(&vio_config);
+}
+
+static uint16_t set_frame_width_and_pins(enum base_io_mode io_mode, enum mspi_xfer_direction xfer_dir)
+{
+	uint16_t dir = VPRCSR_NORDIC_DIR_INPUT;
+	uint16_t frame_width = 0;
+
+	switch (io_mode) {
+	case BASE_IO_MODE_SINGLE:
+		frame_width = 1;
+		break;
+	case BASE_IO_MODE_DUAL:
+		frame_width = 2;
+		break;
+	case BASE_IO_MODE_QUAD:
+		frame_width = 4;
+		break;
+	case BASE_IO_MODE_OCTAL:
+		frame_width = 8;
+		break;
+	}
+
+	NRFX_ASSERT(data_vios_count >= frame_width);
+	NRFX_ASSERT(data_length % frame_width == 0)
+
+	dir = nrf_vpr_csr_vio_dir_get();
+	for (uint8_t i = 0; i < frame_width; i++) {
+		dir = BIT_SET_VALUE(dir, data_vios[i], VPRCSR_NORDIC_DIR_OUTPUT); //(xfer_dir == MSPI_TX)
+							//? VPRCSR_NORDIC_DIR_OUTPUT
+							//: VPRCSR_NORDIC_DIR_INPUT);
+	}
+	nrf_vpr_csr_vio_dir_set(dir);
+
+	return frame_width;
+}
+
+static void prepare_and_send_data(uint8_t *buffer, uint32_t data_length)
+{
+	NRFX_ASSERT(nrfe_mspi_dev_cfg.ce_num < ce_vios_count);
+
+	struct xfer_io_mode_cfg xfer_modes = get_io_modes(nrfe_mspi_dev_cfg.io_mode);
+	uint32_t data;
+	uint16_t frame_width;
+
+	/* TODO: Jira ticket: NRFX-6703
+	 * Device waits this time after setting CE and before sending
+	 * first bit, make this value dependent on dummy cycles.
+	 */
+	xfer_ll_params.counter_initial_value = 32;
+	xfer_ll_params.ce_vio = ce_vios[nrfe_mspi_dev_cfg.ce_num];
+	xfer_ll_params.ce_hold = true;
+	xfer_ll_params.ce_polarity = nrfe_mspi_dev_cfg.ce_polarity;
+	xfer_ll_params.bit_order = HRT_BO_REVERSED_WORD;
+
+	uint16_t out = nrf_vpr_csr_vio_out_get();
+	if (nrfe_mspi_dev_cfg.ce_polarity == MSPI_CE_ACTIVE_LOW) {
+		out = BIT_SET_VALUE(out, xfer_ll_params.ce_vio, VPRCSR_NORDIC_OUT_HIGH);
+	} else {
+		out = BIT_SET_VALUE(out, xfer_ll_params.ce_vio, VPRCSR_NORDIC_OUT_LOW);
+	}
+	nrf_vpr_csr_vio_out_set(out);
+
+	/* Send command */
+	data = nrfe_mspi_xfer_packet.cmd << (BITS_IN_WORD - nrfe_mspi_xfer.cmd_length);
+	xfer_ll_params.data = (uint8_t *)&data;
+	frame_width = set_frame_width_and_pins(xfer_modes.command, MSPI_TX);
+
+	ll_prepare_transfer(frame_width, MSPI_TX, nrfe_mspi_xfer.cmd_length);
+
+	nrf_barrier_rw();
+
+	nrf_vpr_clic_int_pending_set(NRF_VPRCLIC, VEVIF_IRQN(HRT_VEVIF_IDX_WRITE));
+
+	/* Send address */
+	data = nrfe_mspi_xfer_packet.address << (BITS_IN_WORD - nrfe_mspi_xfer.addr_length);
+	xfer_ll_params.data = (uint8_t *)&data;
+	frame_width = set_frame_width_and_pins(xfer_modes.address, MSPI_TX);
+
+	ll_prepare_transfer(frame_width, MSPI_TX, nrfe_mspi_xfer.addr_length);
+
+	nrf_barrier_rw();
+
+	nrf_vpr_clic_int_pending_set(NRF_VPRCLIC, VEVIF_IRQN(HRT_VEVIF_IDX_WRITE));
+
+	/* Send data */
+	xfer_ll_params.bit_order = HRT_BO_REVERSED_BYTE;
+	xfer_ll_params.ce_hold = nrfe_mspi_xfer.hold_ce;
+	/* TODO: Jira ticket: NRFX-6876 use read buffer that is appended to packet in
+	 * NRFE_MSPI_TXRX, this is not possible now due to alignment problems
+	 */
+	xfer_ll_params.data = buffer;
+	frame_width = set_frame_width_and_pins(xfer_modes.data, MSPI_TX);
+
+	ll_prepare_transfer(frame_width, MSPI_TX, data_length * BITS_IN_BYTE);
+
+	nrf_barrier_rw();
+
+	nrf_vpr_clic_int_pending_set(NRF_VPRCLIC, VEVIF_IRQN(HRT_VEVIF_IDX_WRITE));
+
+	nrf_barrier_rw();
+}
+
+void prepare_and_read_data(uint8_t *buffer, uint32_t data_length)
+{
+	NRFX_ASSERT(nrfe_mspi_dev_cfg.ce_num < ce_vios_count);
+
+	struct xfer_io_mode_cfg xfer_modes = get_io_modes(nrfe_mspi_dev_cfg.io_mode);
+	uint32_t data;
+	uint16_t out;
+	uint16_t frame_width;
+
+	/* TODO: Jira ticket: NRFX-6703
+	 * Device waits this time after setting CE and before sending
+	 * first bit, make this value dependent on dummy cycles.
+	 */
+	xfer_ll_params.counter_initial_value = 32;
+	xfer_ll_params.ce_vio = ce_vios[nrfe_mspi_dev_cfg.ce_num];
+	xfer_ll_params.ce_hold = true;
+	xfer_ll_params.ce_polarity = nrfe_mspi_dev_cfg.ce_polarity;
+	xfer_ll_params.bit_order = HRT_BO_REVERSED_WORD;
+
+	out = nrf_vpr_csr_vio_out_get();
+
+	if (nrfe_mspi_dev_cfg.ce_polarity == MSPI_CE_ACTIVE_LOW) {
+		out = BIT_SET_VALUE(out, xfer_ll_params.ce_vio, VPRCSR_NORDIC_OUT_HIGH);
+	} else {
+		out = BIT_SET_VALUE(out, xfer_ll_params.ce_vio, VPRCSR_NORDIC_OUT_LOW);
+	}
+	nrf_vpr_csr_vio_out_set(out);
+
+	/* Send command */
+	data = nrfe_mspi_xfer_packet.cmd << (BITS_IN_WORD - nrfe_mspi_xfer.cmd_length);
+	xfer_ll_params.data = (uint8_t *)&data;
+	frame_width = set_frame_width_and_pins(xfer_modes.command, MSPI_TX);
+
+	ll_prepare_transfer(frame_width, MSPI_TX, nrfe_mspi_xfer.cmd_length);
+
+	nrf_barrier_rw();
+
+	nrf_vpr_clic_int_pending_set(NRF_VPRCLIC, VEVIF_IRQN(HRT_VEVIF_IDX_WRITE));
+
+	/* Send address */
+	data = nrfe_mspi_xfer_packet.address << (BITS_IN_WORD - nrfe_mspi_xfer.addr_length);
+	xfer_ll_params.data = (uint8_t *)&data;
+	frame_width = set_frame_width_and_pins(xfer_modes.address, MSPI_TX);
+
+	ll_prepare_transfer(frame_width, MSPI_TX, nrfe_mspi_xfer.addr_length);
+
+	nrf_barrier_rw();
+
+	nrf_vpr_clic_int_pending_set(NRF_VPRCLIC, VEVIF_IRQN(HRT_VEVIF_IDX_WRITE));
+
+	/* Read data */
+	xfer_ll_params.bit_order = HRT_BO_REVERSED_BYTE;
+	xfer_ll_params.ce_hold = nrfe_mspi_xfer.hold_ce;
+	/* TODO: Jira ticket: NRFX-6876 use read buffer that is appended to packet in
+	 * NRFE_MSPI_TXRX, this is not possible now due to alignment problems
+	 */
+	xfer_ll_params.rx_data = buffer;
+	frame_width = set_frame_width_and_pins(xfer_modes.data, MSPI_RX);
+
+	ll_prepare_receive(frame_width, MSPI_RX, data_length * BITS_IN_BYTE);
+
+	nrf_barrier_rw();
+
+	nrf_vpr_clic_int_pending_set(NRF_VPRCLIC, VEVIF_IRQN(HRT_VEVIF_IDX_READ));
+
+	nrf_barrier_rw();
+}
+
 static void ep_recv(const void *data, size_t len, void *priv)
 {
 	(void)priv;
 	(void)len;
 	nrfe_mspi_flpr_response_t response;
+
 	uint8_t opcode = *(uint8_t *)data;
+	uint32_t num_bytes = 0;
+
+	printf("opcode: %d\n", opcode);
 
 	switch (opcode) {
 	case NRFE_MSPI_CONFIG_PINS: {
@@ -284,7 +645,8 @@ static void ep_recv(const void *data, size_t len, void *priv)
 		response.opcode = cfg->opcode;
 		nrfe_mspi_dev_cfg = cfg->cfg;
 
-		configure_clock(nrfe_mspi_dev_cfg.cpp);
+		dev_pins_configure(nrfe_mspi_dev_cfg.cpp);
+
 		break;
 	}
 	case NRFE_MSPI_CONFIG_XFER: {
@@ -292,6 +654,11 @@ static void ep_recv(const void *data, size_t len, void *priv)
 
 		response.opcode = xfer->opcode;
 		nrfe_mspi_xfer = xfer->xfer;
+
+		printf("CONFIG_XFER: cmd_length: %d, addr_length: %d, tx_dummy: %d, rx_dummy: %d, ce_hold: %d\n",
+		       nrfe_mspi_xfer.cmd_length, nrfe_mspi_xfer.addr_length,
+		       nrfe_mspi_xfer.tx_dummy, nrfe_mspi_xfer.rx_dummy, nrfe_mspi_xfer.hold_ce);
+
 		break;
 	}
 	case NRFE_MSPI_TX:
@@ -299,20 +666,38 @@ static void ep_recv(const void *data, size_t len, void *priv)
 		nrfe_mspi_xfer_packet_t *packet = (nrfe_mspi_xfer_packet_t *)data;
 
 		response.opcode = packet->opcode;
+		nrfe_mspi_xfer_packet = packet->packet;
+
+		num_bytes = nrfe_mspi_xfer_packet.num_bytes;
+
+		printf("%s cmd: 0x%x, addr: 0x%x, data: %d bytes, cmd_length: %d, "
+		       "addr_length: %d\n",
+		       nrfe_mspi_xfer_packet.dir == MSPI_RX ? "RX" : "TX",
+		       nrfe_mspi_xfer_packet.cmd, nrfe_mspi_xfer_packet.address,
+		       nrfe_mspi_xfer_packet.num_bytes, nrfe_mspi_xfer.cmd_length,
+		       nrfe_mspi_xfer.addr_length);
 
 		if (packet->packet.dir == MSPI_RX) {
-			/* TODO: Process received data */
+			if (nrfe_mspi_xfer_packet.num_bytes > 0) {
+				prepare_and_read_data(rx_buffer, nrfe_mspi_xfer_packet.num_bytes);
+			}
 		} else if (packet->packet.dir == MSPI_TX) {
 			prepare_and_send_data(packet->packet);
+		} else {
+			printf("Invalid transfer direction: %d\n", nrfe_mspi_xfer_packet.dir);
 		}
 		break;
 	}
 	default:
-		response.opcode = NRFE_MSPI_WRONG_OPCODE;
+		opcode = NRFE_MSPI_WRONG_OPCODE;
 		break;
 	}
 
-	ipc_service_send(&ep, (const void *)&response.opcode, sizeof(response));
+	uint8_t response_buffer[sizeof(opcode) + num_bytes];
+	response_buffer[0] = opcode;
+	memcpy(&response_buffer[1], rx_buffer, num_bytes);
+
+	ipc_service_send(&ep, (const void *)response_buffer, sizeof(response_buffer));
 }
 
 static int backend_init(void)
@@ -354,6 +739,11 @@ static int backend_init(void)
 	return 0;
 }
 
+__attribute__((interrupt)) void hrt_handler_read(void)
+{
+	hrt_read(xfer_ll_params);
+}
+
 __attribute__((interrupt)) void hrt_handler_write(void)
 {
 	hrt_write(&xfer_params);
@@ -366,6 +756,9 @@ int main(void)
 	if (ret < 0) {
 		return 0;
 	}
+
+	IRQ_DIRECT_CONNECT(HRT_VEVIF_IDX_READ, HRT_IRQ_PRIORITY, hrt_handler_read, 0);
+	nrf_vpr_clic_int_enable_set(NRF_VPRCLIC, VEVIF_IRQN(HRT_VEVIF_IDX_READ), true);
 
 	IRQ_DIRECT_CONNECT(HRT_VEVIF_IDX_WRITE, HRT_IRQ_PRIORITY, hrt_handler_write, 0);
 	nrf_vpr_clic_int_enable_set(NRF_VPRCLIC, VEVIF_IRQN(HRT_VEVIF_IDX_WRITE), true);

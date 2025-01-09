@@ -8,6 +8,7 @@
 #include <hal/nrf_vpr_csr_vtim.h>
 #include <drivers/mspi/nrfe_mspi.h>
 #include <zephyr/drivers/mspi.h>
+#include <stdio.h>
 
 /** @brief Shift control configuration. */
 typedef struct
@@ -175,4 +176,124 @@ void hrt_write(volatile hrt_xfer_t *hrt_xfer_params)
 		}
 		nrf_vpr_csr_vio_out_set(out);
 	}
+}
+
+void hrt_read(volatile struct hrt_ll_xfer xfer_ll_params)
+{
+	uint16_t out;
+	uint32_t word_ctr = 0;
+
+	NRFX_ASSERT((xfer_ll_params.last_word_clocks != 1) || (xfer_ll_params.words == 1))
+
+	/* Enable CS */
+	out = nrf_vpr_csr_vio_out_get();
+
+	if (xfer_ll_params.ce_polarity == MSPI_CE_ACTIVE_LOW) {
+		out = BIT_SET_VALUE(out, xfer_ll_params.ce_vio, VPRCSR_NORDIC_OUT_LOW);
+	} else {
+		out = BIT_SET_VALUE(out, xfer_ll_params.ce_vio, VPRCSR_NORDIC_OUT_HIGH);
+	}
+	nrf_vpr_csr_vio_out_set(out);
+
+	switch (xfer_ll_params.bit_order) {
+	case HRT_BO_NORMAL:
+		nrf_vpr_csr_vio_out_buffered_set(((uint32_t *)xfer_ll_params.data)[word_ctr++]);
+		break;
+	case HRT_BO_REVERSED_BYTE:
+		nrf_vpr_csr_vio_out_buffered_reversed_byte_set(
+			((uint32_t *)xfer_ll_params.data)[word_ctr++]);
+		break;
+	case HRT_BO_REVERSED_WORD:
+		nrf_vpr_csr_vio_out_buffered_reversed_word_set(
+			((uint32_t *)xfer_ll_params.data)[word_ctr++]);
+		break;
+	}
+
+	/* Counter settings */
+	nrf_vpr_csr_vtim_count_mode_set(0, NRF_VPR_CSR_VTIM_COUNT_RELOAD);
+	nrf_vpr_csr_vtim_count_mode_set(1, NRF_VPR_CSR_VTIM_COUNT_RELOAD);
+
+	/* TODO: Jira ticket: NRFX-6703
+	 *       Top value of VTIM. This will determine clock frequency
+	 *                         (SPI_CLOCK ~= CPU_CLOCK / (2 * TOP)).
+	 *       Calculate this value based on frequency
+	 */
+	nrf_vpr_csr_vtim_simple_counter_top_set(0, 32);
+	/* Trigger data capture every two clock cycles */
+	nrf_vpr_csr_vtim_simple_counter_top_set(1, 2 * (32 + 1) - 1);
+
+	/* Start both counters */
+	nrf_vpr_csr_vtim_combined_counter_set(
+		(32 << VPRCSR_NORDIC_CNT_CNT0_Pos) +
+		(32 << VPRCSR_NORDIC_CNT_CNT1_Pos));
+
+	nrf_vpr_csr_vtim_simple_wait_set(0, false, 0);
+
+	while (word_ctr < xfer_ll_params.words) {
+
+		switch (xfer_ll_params.bit_order) {
+		case HRT_BO_NORMAL:
+			nrf_vpr_csr_vio_out_buffered_set(
+				((uint32_t *)xfer_ll_params.data)[word_ctr]);
+			((uint32_t *)xfer_ll_params.rx_data)[word_ctr] =
+				nrf_vpr_csr_vio_in_buffered_get();
+			break;
+		case HRT_BO_REVERSED_BYTE:
+			nrf_vpr_csr_vio_out_buffered_reversed_byte_set(
+				((uint32_t *)xfer_ll_params.data)[word_ctr]);
+			((uint32_t *)xfer_ll_params.rx_data)[word_ctr] =
+				nrf_vpr_csr_vio_in_buffered_reversed_byte_get();
+			break;
+		case HRT_BO_REVERSED_WORD:
+			nrf_vpr_csr_vio_out_buffered_reversed_word_set(
+				((uint32_t *)xfer_ll_params.data)[word_ctr]);
+			((uint32_t *)xfer_ll_params.rx_data)[word_ctr] =
+				nrf_vpr_csr_vio_in_buffered_get();
+			break;
+		}
+		word_ctr++;
+	}
+
+	nrf_vpr_csr_vio_shift_cnt_out_buffered_set(0);
+	while (nrf_vpr_csr_vio_shift_cnt_out_get() > 0) {};
+
+	if (xfer_ll_params.eliminate_last_pulse) {
+		nrf_vpr_csr_vtim_simple_wait_set(0, false, 0);
+	}
+
+	nrf_vpr_csr_vtim_count_mode_set(0, NRF_VPR_CSR_VTIM_COUNT_STOP);
+	nrf_vpr_csr_vtim_simple_wait_set(0, false, 0);
+
+	switch (xfer_ll_params.bit_order) {
+	case HRT_BO_NORMAL:
+		((uint32_t *)xfer_ll_params.rx_data)[word_ctr] = nrf_vpr_csr_vio_in_buffered_get();
+		break;
+	case HRT_BO_REVERSED_BYTE:
+		((uint32_t *)xfer_ll_params.rx_data)[word_ctr] =
+			nrf_vpr_csr_vio_in_buffered_reversed_byte_get();
+		break;
+	case HRT_BO_REVERSED_WORD:
+		((uint32_t *)xfer_ll_params.rx_data)[word_ctr] = nrf_vpr_csr_vio_in_buffered_get();
+		break;
+	}
+
+	nrf_vpr_csr_vio_shift_cnt_out_set(0);
+	nrf_vpr_csr_vio_mode_out_t out_mode = {0};
+	nrf_vpr_csr_vio_mode_out_set(&out_mode);
+	nrf_vpr_csr_vio_mode_in_set(NRF_VPR_CSR_VIO_MODE_IN_CONTINUOUS);
+
+	/* Disable CS */
+	if (xfer_ll_params.ce_hold == false) {
+		out = nrf_vpr_csr_vio_out_get();
+
+		if (xfer_ll_params.ce_polarity == MSPI_CE_ACTIVE_LOW) {
+			out = BIT_SET_VALUE(out, xfer_ll_params.ce_vio, VPRCSR_NORDIC_OUT_HIGH);
+		} else {
+			out = BIT_SET_VALUE(out, xfer_ll_params.ce_vio, VPRCSR_NORDIC_OUT_LOW);
+		}
+		nrf_vpr_csr_vio_out_set(out);
+	}
+
+	/* Stop counters */
+	nrf_vpr_csr_vtim_count_mode_set(1, NRF_VPR_CSR_VTIM_COUNT_STOP);
 }

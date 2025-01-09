@@ -15,7 +15,7 @@
 #include <zephyr/sys/atomic.h>
 #endif
 #include <zephyr/logging/log.h>
-LOG_MODULE_REGISTER(mspi_nrfe, CONFIG_MSPI_LOG_LEVEL);
+LOG_MODULE_REGISTER(mspi_nrfe, LOG_LEVEL_DBG);
 
 #include <hal/nrf_gpio.h>
 #include <drivers/mspi/nrfe_mspi.h>
@@ -184,7 +184,8 @@ static void ipc_recv_clbk(const void *data, size_t len)
 	}
 	}
 
-	LOG_DBG("Received msg with opcode: %d", response->opcode);
+//	LOG_DBG("Received msg with opcode: %d", response->opcode);
+	LOG_HEXDUMP_DBG((uint8_t *)data, len, "RX IPC data:");
 }
 
 /**
@@ -392,6 +393,12 @@ static int api_config(const struct mspi_dt_spec *spec)
 		return ret;
 	}
 
+	LOG_DBG("channel_num %d, op_mode %d, duplex %d, dqs_support %d, sw_multi_periph %d,\n ce_group %p, num_ce_gpios %d, num_periph %d, max_freq %d, re_init %d",
+		config->channel_num, config->op_mode, config->duplex,
+		config->dqs_support, config->sw_multi_periph, config->ce_group,
+		config->num_ce_gpios, config->num_periph, config->max_freq,
+		config->re_init);
+
 	/* Send controller configuration to FLPR */
 	return send_config(NRFE_MSPI_CONFIG_CTRL, (const void *)config, sizeof(struct mspi_cfg));
 }
@@ -475,6 +482,9 @@ static int api_dev_config(const struct device *dev, const struct mspi_dev_id *de
 	memcpy((void *)&drv_data->dev_cfg, (void *)cfg, sizeof(drv_data->dev_cfg));
 	drv_data->dev_id = *dev_id;
 
+	LOG_DBG("io_mode: %d, rx_dummy: %d, tx_dummy: %d, read_cmd: 0x%x, write_cmd: 0x%x,\ncmd_length: %d, addr_length: %d, freq: %d",
+		cfg->io_mode, cfg->rx_dummy, cfg->tx_dummy, cfg->read_cmd, cfg->write_cmd, cfg->cmd_length, cfg->addr_length, cfg->freq);
+
 	return send_config(NRFE_MSPI_CONFIG_DEV, (void *)cfg, sizeof(struct mspi_dev_cfg));
 }
 
@@ -506,6 +516,10 @@ static int xfer_packet(struct mspi_xfer_packet *packet, uint32_t timeout)
 	buffer[0] = (uint8_t)opcode;
 	memcpy((void *)&buffer[1], (void *)packet, struct_size);
 	memcpy((void *)(&buffer[1] + struct_size), (void *)packet->data_buf, packet->num_bytes);
+
+	LOG_DBG("%s packet cmd: 0x%x, addr: 0x%x, size: %d", packet->dir == MSPI_RX ? "RX" : "TX",
+		packet->cmd, packet->address, packet->num_bytes);
+	LOG_HEXDUMP_DBG(packet->data_buf, packet->num_bytes, "Packet data:");
 
 	rc = mspi_ipc_data_send(opcode, buffer, len);
 	if (rc < 0) {
@@ -592,6 +606,11 @@ static int api_transceive(const struct device *dev, const struct mspi_dev_id *de
 	}
 
 	drv_data->xfer = *req;
+
+	LOG_DBG("async: %d, xfer_mode: %d, tx_dummy: %d, rx_dummy: %d, cmd_length: %d, addr_length: %d,\nhold_ce: %d, priority: %d, packets: %p, num_packet: %d, timeout: %d",
+		req->async, req->xfer_mode, req->tx_dummy, req->rx_dummy,
+		req->cmd_length, req->addr_length, req->hold_ce, req->priority,
+		req->packets, req->num_packet, req->timeout);
 
 	rc = send_config(NRFE_MSPI_CONFIG_XFER, (void *)&drv_data->xfer, sizeof(struct mspi_xfer));
 	if (rc < 0) {

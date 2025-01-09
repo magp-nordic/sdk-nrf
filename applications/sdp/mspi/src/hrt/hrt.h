@@ -37,7 +37,8 @@ typedef struct {
 
 typedef struct {
 	/** @brief Buffer for RX/TX data */
-	volatile uint8_t *data;
+	uint8_t *data;
+	uint8_t *rx_data;
 
 	/** @brief Data length in 4 byte words,
 	 * 	   calculated as CEIL(buffer_length_bits/32).
@@ -115,5 +116,13 @@ typedef struct {
  *  @param[in] hrt_xfer_params Hrt transfer parameters.
  */
 void hrt_write(volatile hrt_xfer_t *hrt_xfer_params);
+
+/** @brief Read.
+ *
+ *  Function to be used to read data from MSPI.
+ *
+ *  @param[in] xfer_ll_params Low level transfer parameters.
+ */
+void hrt_read(volatile struct hrt_ll_xfer xfer_ll_params);
 
 #endif /* _HRT_H__ */
