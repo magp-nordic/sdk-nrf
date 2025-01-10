@@ -71,6 +71,10 @@ typedef struct {
 
 	/** @brief Function for writing to buffered out register. */
 	void (*vio_out_set)(uint32_t value);
+
+	/** @brief Function for reading from buffered in register. */
+	uint32_t (*vio_inb_get)(void);
+
 } hrt_xfer_data_t;
 
 
@@ -121,8 +125,8 @@ void hrt_write(volatile hrt_xfer_t *hrt_xfer_params);
  *
  *  Function to be used to read data from MSPI.
  *
- *  @param[in] xfer_ll_params Low level transfer parameters.
+ *  @param[in] hrt_xfer_params Low level transfer parameters.
  */
-void hrt_read(volatile struct hrt_ll_xfer xfer_ll_params);
+void hrt_read(volatile hrt_xfer_t *hrt_xfer_params);
 
 #endif /* _HRT_H__ */
