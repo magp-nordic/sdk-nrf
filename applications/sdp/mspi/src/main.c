@@ -75,7 +75,7 @@ static volatile struct mspi_xfer nrfe_mspi_xfer;
 static volatile hrt_xfer_t xfer_params;
 static volatile uint8_t address_and_dummy_cycles[ADDR_AND_CYCLES_MAX_SIZE];
 
-static volatile uint8_t rx_buffer[512];
+static volatile uint32_t rx_buffer[10];
 
 static struct ipc_ept ep;
 static atomic_t ipc_atomic_sem = ATOMIC_INIT(0);
@@ -243,7 +243,7 @@ void prepare_and_read_data(struct mspi_xfer_packet xfer_packet, volatile uint8_t
 	xfer_params.ce_hold = nrfe_mspi_xfer.hold_ce;
 	xfer_params.ce_polarity = nrfe_mspi_dev_cfg.ce_polarity;
 	xfer_params.io_mode = io_modes[nrfe_mspi_dev_cfg.io_mode];
-	xfer_params.xfer_data[HRT_FE_DATA].rx_data = buffer;
+	xfer_params.xfer_data[HRT_FE_DATA].rx_data = rx_buffer;
 
 
 	nrf_vpr_csr_vio_config_get(&config);
@@ -263,7 +263,7 @@ void prepare_and_read_data(struct mspi_xfer_packet xfer_packet, volatile uint8_t
 
 	/* Configura data phase. */
 	xfer_params.xfer_data[HRT_FE_DATA].words = data_length;
-	xfer_params.xfer_data[HRT_FE_DATA].vio_inb_get = nrf_vpr_csr_vio_in_buffered_get;
+	xfer_params.xfer_data[HRT_FE_DATA].vio_inb_get = nrf_vpr_csr_vio_in_buffered_reversed_byte_get;
 
 	/* Read data */
 
@@ -272,6 +272,11 @@ void prepare_and_read_data(struct mspi_xfer_packet xfer_packet, volatile uint8_t
 	nrf_vpr_clic_int_pending_set(NRF_VPRCLIC, VEVIF_IRQN(HRT_VEVIF_IDX_READ));
 
 	nrf_barrier_rw();
+
+	for (uint8_t i = 0; i < 3; i ++)
+	{
+		printf("data [%d] : %x\n", i, rx_buffer[i]);
+	}
 }
 
 static void config_pins(nrfe_mspi_pinctrl_soc_pin_t *pins_cfg)
@@ -373,6 +378,9 @@ static void dev_pins_configure(enum mspi_cpp_mode cpp_mode)
 			WRITE_BIT(out, ce_vios[i], VPRCSR_NORDIC_OUT_LOW);
 		}
 	}
+
+	WRITE_BIT(out, 3, VPRCSR_NORDIC_OUT_HIGH);
+	WRITE_BIT(out, 4, VPRCSR_NORDIC_OUT_HIGH);
 
 	nrf_vpr_csr_vio_out_set(out);
 	nrf_vpr_csr_vio_config_set(&vio_config);

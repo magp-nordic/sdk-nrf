@@ -212,15 +212,17 @@ void hrt_read(volatile hrt_xfer_t *hrt_xfer_params)
 	/* Counter settings */
 	nrf_vpr_csr_vtim_count_mode_set(0, NRF_VPR_CSR_VTIM_COUNT_RELOAD);
 	nrf_vpr_csr_vtim_count_mode_set(1, NRF_VPR_CSR_VTIM_COUNT_RELOAD);
+	/* Set top counters value. Trigger data capture every two clock cycles */
+	// nrf_vpr_csr_vtim_combined_counter_top_set(hrt_xfer_params->counter_value << VPRCSR_NORDIC_CNTTOP_CNT0RELOAD_Pos |
+	// 											(2 * (hrt_xfer_params->counter_value + 1) - 1) << VPRCSR_NORDIC_CNTTOP_CNT1RELOAD_Pos);
 	nrf_vpr_csr_vtim_simple_counter_top_set(0, hrt_xfer_params->counter_value);
-	/* Trigger data capture every two clock cycles */
 	nrf_vpr_csr_vtim_simple_counter_top_set(1, 2 * (hrt_xfer_params->counter_value + 1) - 1);
 
 	/* Transfer command */
-	hrt_tx(&hrt_xfer_params->xfer_data[HRT_FE_COMMAND], hrt_xfer_params->io_mode.command, &counter_running, 4,
-			hrt_xfer_params->counter_value + 4);
+	hrt_tx(&hrt_xfer_params->xfer_data[HRT_FE_COMMAND], hrt_xfer_params->io_mode.command, &counter_running, hrt_xfer_params->counter_value + 16,
+			16 + 1);
 
-	nrf_vpr_csr_vtim_simple_wait_set(0, false, 0);
+	// nrf_vpr_csr_vtim_simple_wait_set(0, false, 0);
 
 	for (uint8_t i = 0; i < hrt_xfer_params->xfer_data[HRT_FE_DATA].words; i++)
 	{
