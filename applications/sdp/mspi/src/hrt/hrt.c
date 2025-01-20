@@ -219,8 +219,11 @@ void hrt_read(volatile hrt_xfer_t *hrt_xfer_params)
 	nrf_vpr_csr_vtim_simple_counter_top_set(1, 2 * (hrt_xfer_params->counter_value + 1) - 1);
 
 	/* Transfer command */
-	hrt_tx(&hrt_xfer_params->xfer_data[HRT_FE_COMMAND], hrt_xfer_params->io_mode.command, &counter_running, hrt_xfer_params->counter_value + 16,
-			16 + 1);
+	hrt_tx(&hrt_xfer_params->xfer_data[HRT_FE_COMMAND], hrt_xfer_params->io_mode.command, &counter_running, hrt_xfer_params->counter_value,
+			1);
+
+	// hrt_tx(&hrt_xfer_params->xfer_data[HRT_FE_COMMAND], hrt_xfer_params->io_mode.command, &counter_running, 16,
+	// 		16 + 1);
 
 	// nrf_vpr_csr_vtim_simple_wait_set(0, false, 0);
 
