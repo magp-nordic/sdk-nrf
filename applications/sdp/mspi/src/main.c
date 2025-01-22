@@ -75,7 +75,7 @@ static volatile struct mspi_xfer nrfe_mspi_xfer;
 static volatile hrt_xfer_t xfer_params;
 static volatile uint8_t address_and_dummy_cycles[ADDR_AND_CYCLES_MAX_SIZE];
 
-static volatile uint32_t rx_buffer[10];
+static volatile uint8_t rx_buffer[10];
 
 static struct ipc_ept ep;
 static atomic_t ipc_atomic_sem = ATOMIC_INIT(0);
@@ -265,6 +265,11 @@ void prepare_and_read_data(struct mspi_xfer_packet xfer_packet, volatile uint8_t
 	xfer_params.xfer_data[HRT_FE_DATA].words = data_length;
 	xfer_params.xfer_data[HRT_FE_DATA].vio_inb_get = nrf_vpr_csr_vio_in_buffered_reversed_byte_get;
 
+	for (uint8_t i = 0; i < 10; i ++)
+	{
+		rx_buffer[i] = 0;
+	}
+
 	/* Read data */
 
 	nrf_barrier_rw();
@@ -273,10 +278,13 @@ void prepare_and_read_data(struct mspi_xfer_packet xfer_packet, volatile uint8_t
 
 	nrf_barrier_rw();
 
-	for (uint8_t i = 0; i < 3; i ++)
-	{
-		printf("data [%d] : %x\n", i, rx_buffer[i]);
-	}
+
+	printf("data: %x, %x %x\n", rx_buffer[0], rx_buffer[1], rx_buffer[2]);
+
+	// for (uint8_t i = 0; i < 3; i ++)
+	// {
+	// 	printf("data [%d] : %x\n", i, rx_buffer[i]);
+	// }
 }
 
 static void config_pins(nrfe_mspi_pinctrl_soc_pin_t *pins_cfg)
@@ -340,7 +348,7 @@ static void dev_pins_configure(enum mspi_cpp_mode cpp_mode)
 {
 	nrf_vpr_csr_vio_config_t vio_config = {
 		.input_sel = 0,
-		.stop_cnt = 0,
+		.stop_cnt = true,
 	};
 	uint16_t out = nrf_vpr_csr_vio_out_get();
 
@@ -462,9 +470,9 @@ static void ep_recv(const void *data, size_t len, void *priv)
 		response.opcode = xfer->opcode;
 		nrfe_mspi_xfer = xfer->xfer;
 
-		printf("CONFIG_XFER: cmd_length: %d, addr_length: %d, tx_dummy: %d, rx_dummy: %d, ce_hold: %d\n",
-		       nrfe_mspi_xfer.cmd_length, nrfe_mspi_xfer.addr_length,
-		       nrfe_mspi_xfer.tx_dummy, nrfe_mspi_xfer.rx_dummy, nrfe_mspi_xfer.hold_ce);
+		// printf("CONFIG_XFER: cmd_length: %d, addr_length: %d, tx_dummy: %d, rx_dummy: %d, ce_hold: %d\n",
+		//        nrfe_mspi_xfer.cmd_length, nrfe_mspi_xfer.addr_length,
+		//        nrfe_mspi_xfer.tx_dummy, nrfe_mspi_xfer.rx_dummy, nrfe_mspi_xfer.hold_ce);
 
 		break;
 	}
