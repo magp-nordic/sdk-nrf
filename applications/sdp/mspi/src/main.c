@@ -75,7 +75,7 @@ static volatile struct mspi_xfer nrfe_mspi_xfer;
 static volatile hrt_xfer_t xfer_params;
 static volatile uint8_t address_and_dummy_cycles[ADDR_AND_CYCLES_MAX_SIZE];
 
-static volatile uint8_t rx_buffer[10];
+static volatile uint32_t rx_buffer[10];
 
 static struct ipc_ept ep;
 static atomic_t ipc_atomic_sem = ATOMIC_INIT(0);

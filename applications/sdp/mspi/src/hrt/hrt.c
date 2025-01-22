@@ -38,9 +38,9 @@ static void hrt_tx(volatile hrt_xfer_data_t *xfer_data, uint8_t frame_width, boo
 
 	nrf_vpr_csr_vio_shift_ctrl_t shift_ctrl = {
 		// .shift_count = BITS_IN_WORD / frame_width - 1,
-		.shift_count = 7,
+		.shift_count = 15,
 		.out_mode = NRF_VPR_CSR_VIO_SHIFT_OUTB_TOGGLE,
-		.frame_width = frame_width,
+		.frame_width = 1,
 		.in_mode = NRF_VPR_CSR_VIO_MODE_IN_SHIFT,
 	};
 
@@ -234,18 +234,41 @@ void hrt_read(volatile hrt_xfer_t *hrt_xfer_params)
 	nrf_vpr_csr_vtim_simple_counter_top_set(0, hrt_xfer_params->counter_value);
 	nrf_vpr_csr_vtim_simple_counter_top_set(1, 2 * (hrt_xfer_params->counter_value + 1) - 1);
 
+	nrf_vpr_csr_vio_shift_ctrl_t in_shift_ctrl = {
+		// .shift_count = BITS_IN_WORD / frame_width - 1,
+		.shift_count = 23,
+		.out_mode = NRF_VPR_CSR_VIO_SHIFT_OUTB_TOGGLE,
+		.frame_width = 1,
+		.in_mode = NRF_VPR_CSR_VIO_MODE_IN_SHIFT,
+	};
+
 	/* Transfer command */
 	hrt_tx(&hrt_xfer_params->xfer_data[HRT_FE_COMMAND], hrt_xfer_params->io_mode.command, &counter_running, hrt_xfer_params->counter_value,
 			1);
 
-	// hrt_tx(&hrt_xfer_params->xfer_data[HRT_FE_COMMAND], hrt_xfer_params->io_mode.command, &counter_running, 16,
-	// 		16 + 1);
+	// while(nrf_vpr_csr_vio_shift_cnt_out_get() != 0){}
 
 	// nrf_vpr_csr_vtim_simple_wait_set(0, false, 0);
 
+	// nrf_vpr_csr_vio_shift_ctrl_t in_shift_ctrl = {
+	// 	.shift_count = 7,
+	// 	.out_mode = NRF_VPR_CSR_VIO_SHIFT_OUTB_TOGGLE,
+	// 	.frame_width = 4,
+	// 	.in_mode = NRF_VPR_CSR_VIO_MODE_IN_SHIFT,
+	// };
+
+	// nrf_vpr_csr_vio_shift_ctrl_buffered_set(&shift_ctrl);
+
+	// nrf_vpr_csr_vio_out_buffered_set(nrf_vpr_csr_vio_out_get());
+	// nrf_vpr_csr_vtim_simple_wait_set(0, false, 0);
+
+	hrt_xfer_params->xfer_data[HRT_FE_DATA].vio_inb_get();
+
+	nrf_vpr_csr_vio_shift_ctrl_buffered_set(&in_shift_ctrl);
+
 	for (uint8_t i = 0; i < hrt_xfer_params->xfer_data[HRT_FE_DATA].words; i++)
 	{
-		hrt_xfer_params->xfer_data[HRT_FE_DATA].rx_data[i] = hrt_xfer_params->xfer_data[HRT_FE_DATA].vio_inb_get() >> 24;
+		hrt_xfer_params->xfer_data[HRT_FE_DATA].rx_data[i] = hrt_xfer_params->xfer_data[HRT_FE_DATA].vio_inb_get() >> 8;
 	}
 
 	/* Final configuration */
