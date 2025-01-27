@@ -15,7 +15,7 @@
 #include <zephyr/sys/atomic.h>
 #endif
 #include <zephyr/logging/log.h>
-LOG_MODULE_REGISTER(mspi_nrfe, CONFIG_MSPI_LOG_LEVEL);
+LOG_MODULE_REGISTER(mspi_nrfe, LOG_LEVEL_DBG);
 
 #include <hal/nrf_gpio.h>
 #include <drivers/mspi/nrfe_mspi.h>
@@ -183,7 +183,8 @@ static void ipc_recv_clbk(const void *data, size_t len)
 	}
 	}
 
-	LOG_DBG("Received msg with opcode: %d", response->opcode);
+	// LOG_DBG("Received msg with opcode: %d", response->opcode);
+	LOG_HEXDUMP_DBG((uint8_t *)data, len, "RX IPC data:");
 }
 
 /**
@@ -519,8 +520,10 @@ static int xfer_packet(struct mspi_xfer_packet *packet, uint32_t timeout)
 
 	/* Wait for the transfer to complete and receive data. */
 	if ((packet->dir == MSPI_RX) && (ipc_receive_buffer != NULL) && (ipc_received > 0)) {
-		memcpy((void *)packet->data_buf, (void *)ipc_receive_buffer, ipc_received);
-		packet->num_bytes = ipc_received;
+		/* Writing to packet->num_bytes causes memory access errors, so for now
+			number of received data is stored in the first byte in data buffer. */
+		packet->data_buf[0] = ipc_received;
+		memcpy((void *)(packet->data_buf + 1), (void *)ipc_receive_buffer, ipc_received);
 
 		/* Clear the receive buffer pointer and size */
 		ipc_receive_buffer = NULL;
