@@ -197,7 +197,8 @@ void hrt_write(hrt_xfer_t *hrt_xfer_params)
 	}
 }
 
-static void hrt_tx_rx(volatile hrt_xfer_data_t *xfer_data, uint8_t frame_width, uint16_t cnt0_val, uint16_t cnt1_val, bool *counter_running)
+static void hrt_tx_rx(volatile hrt_xfer_data_t *xfer_data, uint8_t frame_width, uint16_t cnt0_val,
+						uint16_t cnt1_val, bool rx_next, bool *counter_running)
 {
 	if(xfer_data->word_count == 0)
 	{
@@ -219,6 +220,12 @@ static void hrt_tx_rx(volatile hrt_xfer_data_t *xfer_data, uint8_t frame_width, 
 				nrf_vpr_csr_vio_shift_ctrl_buffered_set(&shift_ctrl);
 
 				xfer_data->vio_out_set(xfer_data->last_word);
+
+				if (rx_next) {
+					// shift_ctrl.in_mode = NRF_VPR_CSR_VIO_MODE_IN_SHIFT;
+					shift_ctrl.shift_count = BITS_IN_BYTE - 1;
+					nrf_vpr_csr_vio_shift_ctrl_buffered_set(&shift_ctrl);
+				}
 				break;
 			case 2: /* Last but one transfer.*/
 				shift_ctrl.shift_count =
@@ -269,9 +276,8 @@ void hrt_read(volatile hrt_xfer_t *hrt_xfer_params)
 	nrf_vpr_csr_vio_dir_set(hrt_xfer_params->tx_direction_mask);
 
 	/* Initial configuration */
-	nrf_vpr_csr_vio_mode_in_set(NRF_VPR_CSR_VIO_MODE_IN_SHIFT);
 	nrf_vpr_csr_vio_mode_out_set(&out_mode);
-	nrf_vpr_csr_vio_shift_cnt_out_set(hrt_xfer_params->xfer_data[HRT_FE_COMMAND].word_count * BITS_IN_BYTE);
+	nrf_vpr_csr_vio_shift_cnt_out_set(BITS_IN_BYTE);
 
 	/* Counter settings */
 	nrf_vpr_csr_vtim_count_mode_set(0, NRF_VPR_CSR_VTIM_COUNT_RELOAD);
@@ -283,7 +289,15 @@ void hrt_read(volatile hrt_xfer_t *hrt_xfer_params)
 
 	/* Transfer command */
 	hrt_tx_rx(&hrt_xfer_params->xfer_data[HRT_FE_COMMAND], hrt_xfer_params->bus_widths.command, hrt_xfer_params->counter_value,
-			CNT1_INIT_VALUE, &counter_running);
+			hrt_xfer_params->counter_value + CNT1_INIT_VALUE, false, &counter_running);
+
+	/* Transfer address */
+	hrt_tx_rx(&hrt_xfer_params->xfer_data[HRT_FE_ADDRESS], hrt_xfer_params->bus_widths.address,
+	        hrt_xfer_params->counter_value, CNT1_INIT_VALUE, true, &counter_running);
+
+	nrf_vpr_csr_vio_shift_cnt_in_set(BITS_IN_BYTE);
+
+	hrt_xfer_params->xfer_data[HRT_FE_DATA].vio_inb_get();
 
 	for (uint8_t i = 0; i < hrt_xfer_params->xfer_data[HRT_FE_DATA].word_count; i++)
 	{
