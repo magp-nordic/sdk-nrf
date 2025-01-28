@@ -38,7 +38,6 @@ typedef struct {
 typedef struct {
 	/** @brief Buffer for RX/TX data */
 	uint8_t *data;
-	uint8_t *rx_data;
 
 	/** @brief Data length in 4 byte words,
 	 *         calculated as CEIL(buffer_length_bits/32).

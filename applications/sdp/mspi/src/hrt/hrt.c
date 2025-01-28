@@ -10,11 +10,14 @@
 /* Hardware requirement, to get n shifts SHIFTCNTB register has to be set to n-1*/
 #define SHIFTCNTB_VALUE(shift_count) (shift_count - 1)
 
-#define SPI_INPUT_PIN_NUM	2
-#define CNT1_INIT_VALUE		1
+#define SPI_INPUT_PIN_NUM 2
+#define CNT1_INIT_VALUE	  1
+#define MSB_MASK (0xff000000)
 
-#define INPUT_SHIFT_COUNT	(BITS_IN_WORD - BITS_IN_BYTE)
+#define INPUT_SHIFT_COUNT (BITS_IN_WORD - BITS_IN_BYTE)
 
+/* Macro for calculating TOP value of CNT1. It should be twice as TOP value of CNT0
+	so that input was sampled on the other clock edge than sending. */
 #define CNT1_TOP_CALCULATE(cnt0_top) (2 * ((cnt0_top) + 1) - 1)
 
 /** @brief Shift control configuration. */
@@ -197,10 +200,10 @@ void hrt_write(hrt_xfer_t *hrt_xfer_params)
 	}
 }
 
-static void hrt_tx_rx(volatile hrt_xfer_data_t *xfer_data, uint8_t frame_width, uint16_t cnt0_val, uint16_t cnt1_val, bool *counter_running)
+static void hrt_tx_rx(volatile hrt_xfer_data_t *xfer_data, uint8_t frame_width, bool start_counter,
+		      uint16_t cnt0_val, uint16_t cnt1_val)
 {
-	if(xfer_data->word_count == 0)
-	{
+	if (xfer_data->word_count == 0) {
 		return;
 	}
 
@@ -211,32 +214,27 @@ static void hrt_tx_rx(volatile hrt_xfer_data_t *xfer_data, uint8_t frame_width, 
 		.in_mode = NRF_VPR_CSR_VIO_MODE_IN_SHIFT,
 	};
 
+	uint32_t to_send = *((uint32_t *)xfer_data->data);
+
+	nrf_vpr_csr_vio_shift_ctrl_buffered_set(&shift_ctrl);
+
 	for (uint32_t i = 0; i < xfer_data->word_count; i++) {
 
-		switch (xfer_data->word_count - i) {
-			case 1: /* Last transfer */
-				shift_ctrl.shift_count = xfer_data->last_word_clocks - 1;
-				nrf_vpr_csr_vio_shift_ctrl_buffered_set(&shift_ctrl);
+		xfer_data->vio_out_set(to_send & MSB_MASK);
 
-				xfer_data->vio_out_set(xfer_data->last_word);
-				break;
-			case 2: /* Last but one transfer.*/
-				shift_ctrl.shift_count =
-					xfer_data->penultimate_word_clocks - 1;
-				nrf_vpr_csr_vio_shift_ctrl_buffered_set(&shift_ctrl);
-				xfer_data->vio_out_set(((uint32_t *)xfer_data->data)[i]);
-				break;
-			default:
-				nrf_vpr_csr_vio_shift_ctrl_buffered_set(&shift_ctrl);
-				xfer_data->vio_out_set(((uint32_t *)xfer_data->data)[i]);
-		}
+		to_send = to_send << BITS_IN_BYTE;
 
-		if ((i == 0) && (!*counter_running)) {
+		if ((i == 0) && start_counter) {
 			/* Start both counters */
 			nrf_vpr_csr_vtim_combined_counter_set(
 				(cnt0_val << VPRCSR_NORDIC_CNT_CNT0_Pos) +
 				(cnt1_val << VPRCSR_NORDIC_CNT_CNT1_Pos));
-			*counter_running = true;
+		} else {
+			/* Since we start reading right after the trasmission is started,
+				we need to read from INB register in the meantime, even if stop_cnt
+				from nrf_vpr_csr_vio_config_t is set to false. Otherwise clock is
+				not generated when the actual data is sent by a peripheral device. */
+			nrf_vpr_csr_vio_in_buffered_reversed_byte_get();
 		}
 	}
 }
@@ -244,7 +242,6 @@ static void hrt_tx_rx(volatile hrt_xfer_data_t *xfer_data, uint8_t frame_width, 
 void hrt_read(volatile hrt_xfer_t *hrt_xfer_params)
 {
 	uint16_t out;
-	bool counter_running = false;
 	nrf_vpr_csr_vio_shift_ctrl_t shift_ctrl = {
 		.out_mode = NRF_VPR_CSR_VIO_SHIFT_NONE,
 		.in_mode = NRF_VPR_CSR_VIO_MODE_IN_CONTINUOUS,
@@ -271,7 +268,7 @@ void hrt_read(volatile hrt_xfer_t *hrt_xfer_params)
 	/* Initial configuration */
 	nrf_vpr_csr_vio_mode_in_set(NRF_VPR_CSR_VIO_MODE_IN_SHIFT);
 	nrf_vpr_csr_vio_mode_out_set(&out_mode);
-	nrf_vpr_csr_vio_shift_cnt_out_set(hrt_xfer_params->xfer_data[HRT_FE_COMMAND].word_count * BITS_IN_BYTE);
+	nrf_vpr_csr_vio_shift_cnt_out_set(BITS_IN_BYTE);
 
 	/* Counter settings */
 	nrf_vpr_csr_vtim_count_mode_set(0, NRF_VPR_CSR_VTIM_COUNT_RELOAD);
@@ -279,24 +276,28 @@ void hrt_read(volatile hrt_xfer_t *hrt_xfer_params)
 
 	/* Set top counters value. Trigger data capture every two clock cycles */
 	nrf_vpr_csr_vtim_simple_counter_top_set(0, hrt_xfer_params->counter_value);
-	nrf_vpr_csr_vtim_simple_counter_top_set(1, CNT1_TOP_CALCULATE(hrt_xfer_params->counter_value));
+	nrf_vpr_csr_vtim_simple_counter_top_set(1,
+						CNT1_TOP_CALCULATE(hrt_xfer_params->counter_value));
 
 	/* Transfer command */
-	hrt_tx_rx(&hrt_xfer_params->xfer_data[HRT_FE_COMMAND], hrt_xfer_params->bus_widths.command, hrt_xfer_params->counter_value,
-			CNT1_INIT_VALUE, &counter_running);
+	hrt_tx_rx(&hrt_xfer_params->xfer_data[HRT_FE_COMMAND], hrt_xfer_params->bus_widths.command,
+		  true, hrt_xfer_params->counter_value, CNT1_INIT_VALUE);
 
-	for (uint8_t i = 0; i < hrt_xfer_params->xfer_data[HRT_FE_DATA].word_count; i++)
-	{
-		hrt_xfer_params->xfer_data[HRT_FE_DATA].rx_data[i] = hrt_xfer_params->xfer_data[HRT_FE_DATA].vio_inb_get() >> INPUT_SHIFT_COUNT;
+	/* Transfer address */
+	hrt_tx_rx(&hrt_xfer_params->xfer_data[HRT_FE_ADDRESS], hrt_xfer_params->bus_widths.address,
+		  false, hrt_xfer_params->counter_value, CNT1_INIT_VALUE);
+
+	for (uint8_t i = 0; i < hrt_xfer_params->xfer_data[HRT_FE_DATA].word_count; i++) {
+		hrt_xfer_params->xfer_data[HRT_FE_DATA].data[i] =
+			hrt_xfer_params->xfer_data[HRT_FE_DATA].vio_inb_get() >> INPUT_SHIFT_COUNT;
 	}
-
-	/* Final configuration */
-	nrf_vpr_csr_vio_shift_ctrl_buffered_set(&shift_ctrl);
-	nrf_vpr_csr_vio_out_buffered_reversed_word_set(0);
 
 	/* Stop counters */
 	nrf_vpr_csr_vtim_count_mode_set(0, NRF_VPR_CSR_VTIM_COUNT_STOP);
 	nrf_vpr_csr_vtim_count_mode_set(1, NRF_VPR_CSR_VTIM_COUNT_STOP);
+
+	/* Final configuration */
+	nrf_vpr_csr_vio_shift_ctrl_buffered_set(&shift_ctrl);
 
 	/* Disable CS */
 	if (!hrt_xfer_params->ce_hold) {
