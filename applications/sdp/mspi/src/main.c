@@ -187,7 +187,7 @@ static void xfer_execute(nrfe_mspi_xfer_packet_msg_t *xfer_packet)
 	volatile nrfe_mspi_dev_config_t *device =
 		&nrfe_mspi_devices[nrfe_mspi_xfer_config.device_index];
 
-	xfer_params.counter_value = 4;
+	xfer_params.counter_value = 31;
 	xfer_params.ce_vio = ce_vios[device->ce_index];
 	xfer_params.ce_hold = nrfe_mspi_xfer_config.hold_ce;
 	xfer_params.ce_polarity = device->ce_polarity;
@@ -257,7 +257,7 @@ void prepare_and_read_data(nrfe_mspi_xfer_packet_msg_t *xfer_packet, volatile ui
 		&nrfe_mspi_devices[nrfe_mspi_xfer_config.device_index];
 	nrf_vpr_csr_vio_config_t config;
 
-	xfer_params.counter_value = 4;
+	xfer_params.counter_value = 31;
 	xfer_params.ce_vio = ce_vios[device->ce_index];
 	xfer_params.ce_hold = nrfe_mspi_xfer_config.hold_ce;
 	xfer_params.ce_polarity = device->ce_polarity;

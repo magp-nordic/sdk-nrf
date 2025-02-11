@@ -69,7 +69,7 @@ NRF_STATIC_INLINE void nrf_vpr_csr_vio_out_clear_set(uint16_t value)
 static const nrf_vpr_csr_vio_shift_ctrl_t write_final_shift_ctrl_cfg = {
 	.shift_count = 1,
 	.out_mode = NRF_VPR_CSR_VIO_SHIFT_NONE,
-	.frame_width = 4,
+	.frame_width = 1,
 	.in_mode = NRF_VPR_CSR_VIO_MODE_IN_CONTINUOUS,
 };
 

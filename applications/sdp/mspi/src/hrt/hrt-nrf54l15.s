@@ -285,7 +285,7 @@ hrt_write:
 	csrw 2010, 0
  #NO_APP
 .L41:
-	li	a5,16384
+	li	a5,4096
 	addi	a5,a5,1
  #APP
 	csrw 3019, a5
