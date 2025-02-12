@@ -224,7 +224,7 @@ static void hrt_tx_rx(volatile hrt_xfer_data_t *xfer_data, uint8_t frame_width, 
 		      uint16_t cnt0_val, uint16_t cnt1_val)
 {
 	nrf_vpr_csr_vio_shift_ctrl_t shift_ctrl = {
-		.shift_count = BITS_IN_BYTE - 1,
+		.shift_count = SHIFTCNTB_VALUE(BITS_IN_BYTE / frame_width),
 		.out_mode = NRF_VPR_CSR_VIO_SHIFT_OUTB_TOGGLE,
 		.frame_width = frame_width,
 		.in_mode = NRF_VPR_CSR_VIO_MODE_IN_SHIFT,
@@ -270,6 +270,9 @@ void hrt_read(volatile hrt_xfer_t *hrt_xfer_params)
 		.mode = NRF_VPR_CSR_VIO_SHIFT_OUTB_TOGGLE,
 		.frame_width = 1,
 	};
+	nrf_vpr_csr_vio_mode_out_t out_mode2 = {
+		.mode = NRF_VPR_CSR_VIO_SHIFT_OUTB_TOGGLE,
+	};
 
 	/* Enable CS */
 	if (hrt_xfer_params->ce_polarity == MSPI_CE_ACTIVE_LOW) {
@@ -305,6 +308,10 @@ void hrt_read(volatile hrt_xfer_t *hrt_xfer_params)
 	hrt_tx_rx(&hrt_xfer_params->xfer_data[HRT_FE_ADDRESS], hrt_xfer_params->bus_widths.address,
 		  false, hrt_xfer_params->counter_value, CNT1_INIT_VALUE);
 
+	out_mode2.frame_width = hrt_xfer_params->bus_widths.data;
+	nrf_vpr_csr_vio_mode_out_buffered_set(&out_mode2);
+	nrf_vpr_csr_vio_shift_cnt_out_buffered_set(SHIFTCNTB_VALUE(BITS_IN_BYTE / hrt_xfer_params->bus_widths.data));
+
 	for (uint8_t i = 0; i < hrt_xfer_params->xfer_data[HRT_FE_DATA].word_count; i++) {
 		hrt_xfer_params->xfer_data[HRT_FE_DATA].data[i] =
 			vpr_csr_vio_in_buffered_reversed_byte_get() >> INPUT_SHIFT_COUNT;
@@ -326,6 +333,8 @@ void hrt_read(volatile hrt_xfer_t *hrt_xfer_params)
 			nrf_vpr_csr_vio_out_clear_set(BIT(hrt_xfer_params->ce_vio));
 		}
 	}
+
+	nrf_vpr_csr_vio_out_clear_set(BIT(0));
 
 	/* Set DQ1 back as output. */
 	WRITE_BIT(hrt_xfer_params->tx_direction_mask, SPI_INPUT_PIN_NUM, VPRCSR_NORDIC_DIR_OUTPUT);

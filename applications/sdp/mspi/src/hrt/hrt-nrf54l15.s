@@ -107,28 +107,34 @@ hrt_tx:
 	.align	1
 	.type	hrt_tx_rx.constprop.0, @function
 hrt_tx_rx.constprop.0:
-	lw	a5,0(a0)
-	lw	a4,4(a0)
-	beq	a4,zero,.L26
-	li	a4,126976
-	slli	a1,a1,12
+	lw	a4,0(a0)
+	mv	a5,a1
+	lw	a1,4(a0)
+	beq	a1,zero,.L26
+	li	a1,8
+	div	a1,a1,a5
 	addi	sp,sp,-24
-	and	a1,a1,a4
-	li	a4,2097152
 	sw	s0,16(sp)
 	sw	ra,20(sp)
 	sw	s1,12(sp)
-	addi	a4,a4,1031
+	lw	s1,0(a4)
+	slli	a5,a5,12
+	li	a4,126976
+	and	a5,a5,a4
 	mv	s0,a0
-	lw	a5,0(a5)
-	or	a1,a1,a4
+	addi	a1,a1,-1
+	andi	a1,a1,63
+	or	a1,a1,a5
+	li	a5,2097152
+	addi	a5,a5,1024
+	or	a1,a1,a5
  #APP
 	csrw 3019, a1
  #NO_APP
-	li	s1,0
+	li	a5,0
 .L17:
 	lw	a4,4(s0)
-	bltu	s1,a4,.L20
+	bltu	a5,a4,.L20
 	lw	ra,20(sp)
 	lw	s0,16(sp)
 	lw	s1,12(sp)
@@ -137,7 +143,7 @@ hrt_tx_rx.constprop.0:
 .L20:
 	lw	a4,16(s0)
 	li	a0,-16777216
-	and	a0,a5,a0
+	and	a0,s1,a0
 	sw	a3,8(sp)
 	sw	a2,4(sp)
 	sw	a5,0(sp)
@@ -145,8 +151,8 @@ hrt_tx_rx.constprop.0:
 	lw	a5,0(sp)
 	lw	a2,4(sp)
 	lw	a3,8(sp)
-	slli	a5,a5,8
-	bne	s1,zero,.L18
+	slli	s1,s1,8
+	bne	a5,zero,.L18
 	beq	a2,zero,.L18
 	li	a4,65536
 	add	a4,a3,a4
@@ -154,7 +160,7 @@ hrt_tx_rx.constprop.0:
 	csrw 2002, a4
  #NO_APP
 .L19:
-	addi	s1,s1,1
+	addi	a5,a5,1
 	j	.L17
 .L18:
  #APP
@@ -392,14 +398,30 @@ hrt_read:
  #NO_APP
 	lbu	a1,80(s0)
 	lhu	a3,84(s0)
-	li	a2,1
 	mv	a0,s0
+	li	a2,1
 	call	hrt_tx_rx.constprop.0
 	lbu	a1,81(s0)
 	lhu	a3,84(s0)
 	li	a2,0
 	addi	a0,s0,20
 	call	hrt_tx_rx.constprop.0
+	lbu	a5,83(s0)
+	li	a4,2031616
+	slli	a5,a5,16
+	and	a5,a5,a4
+	ori	a5,a5,4
+ #APP
+	csrw 3043, a5
+ #NO_APP
+	lbu	a4,83(s0)
+	li	a5,8
+	div	a5,a5,a4
+	addi	a5,a5,-1
+	andi	a5,a5,0xff
+ #APP
+	csrw 3023, a5
+ #NO_APP
 	li	a5,0
 .L57:
 	lw	a4,64(s0)
@@ -422,6 +444,9 @@ hrt_read:
 	csrs 3008, a5
  #NO_APP
 .L59:
+ #APP
+	csrc 3008, 1
+ #NO_APP
 	lhu	a5,90(s0)
 	ori	a5,a5,4
 	sh	a5,90(s0)
