@@ -35,6 +35,8 @@ manifest:
       url-base: https://github.com/boschsensortec
     - name: eembc
       url-base: https://github.com/eembc
+    - name: magp
+      url-base: https://github.com/magp-nordic
 
   # If not otherwise specified, the projects below should be obtained
   # from the ncs remote.
@@ -64,8 +66,9 @@ manifest:
     # https://developer.nordicsemi.com/nRF_Connect_SDK/doc/latest/zephyr/introduction/index.html
     # https://developer.nordicsemi.com/nRF_Connect_SDK/doc/latest/zephyr/guides/modules.html
     - name: zephyr
+      remote: magp
       repo-path: sdk-zephyr
-      revision: 9425c47819d9bfe1bee49174949135beed7e5ab3
+      revision: pull/1/head
       import:
         # In addition to the zephyr repository itself, NCS also
         # imports the contents of zephyr/west.yml at the above
@@ -88,6 +91,8 @@ manifest:
           - edtt
           - fatfs
           - hal_nordic
+          - hal_nordic_nrfx
+          - hal_nordic_bsp_lumos
           - hal_st # required for ST sensors (unrelated to STM32 MCUs)
           - hal_tdk # required for Invensense sensors such as ICM42670
           - hal_wurthelektronik
